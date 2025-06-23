@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import { AuthState, User, Dealership, LoginCredentials, RegisterDealershipData, RegisterUserData } from '../types/auth';
-import { AuthManager } from '../utils/auth';
+import { SupabaseAuthManager } from '../utils/supabaseAuth';
 
 interface AuthContextType extends AuthState {
   login: (credentials: LoginCredentials) => Promise<void>;
@@ -63,21 +63,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     // Initialize demo data
-    AuthManager.initializeDemoData();
+    SupabaseAuthManager.initializeDemoData();
 
     // Check for existing session
-    const session = AuthManager.getCurrentSession();
-    if (session) {
-      dispatch({ type: 'LOGIN_SUCCESS', payload: session });
-    } else {
-      dispatch({ type: 'SET_LOADING', payload: false });
-    }
+    const checkSession = async () => {
+      try {
+        const session = await SupabaseAuthManager.getCurrentSession();
+        if (session) {
+          dispatch({ type: 'LOGIN_SUCCESS', payload: session });
+        } else {
+          dispatch({ type: 'SET_LOADING', payload: false });
+        }
+      } catch (error) {
+        console.error('Error checking session:', error);
+        dispatch({ type: 'SET_LOADING', payload: false });
+      }
+    };
+
+    checkSession();
   }, []);
 
   const login = async (credentials: LoginCredentials) => {
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
-      const result = await AuthManager.login(credentials);
+      const result = await SupabaseAuthManager.login(credentials);
       dispatch({ type: 'LOGIN_SUCCESS', payload: result });
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Login failed' });
@@ -85,14 +94,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
-    AuthManager.logout();
+    SupabaseAuthManager.logout();
     dispatch({ type: 'LOGOUT' });
   };
 
   const registerDealership = async (data: RegisterDealershipData) => {
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
-      const result = await AuthManager.registerDealership(data);
+      const result = await SupabaseAuthManager.registerDealership(data);
       dispatch({ type: 'LOGIN_SUCCESS', payload: result });
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Registration failed' });
@@ -106,7 +115,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
-      await AuthManager.registerUser(data, state.dealership.id);
+      await SupabaseAuthManager.registerUser(data, state.dealership.id);
       dispatch({ type: 'SET_LOADING', payload: false });
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'User registration failed' });
