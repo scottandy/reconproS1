@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { AuthManager } from '../utils/auth';
+import { SupabaseAuthManager } from '../utils/supabaseAuth';
 import { User, RegisterUserData } from '../types/auth';
 import { Users, Plus, Mail, User as UserIcon, Shield, Calendar, Eye, EyeOff, X } from 'lucide-react';
 
@@ -18,6 +18,7 @@ const UserManagement: React.FC = () => {
     role: 'technician'
   });
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     if (dealership) {
@@ -25,10 +26,17 @@ const UserManagement: React.FC = () => {
     }
   }, [dealership]);
 
-  const loadUsers = () => {
+  const loadUsers = async () => {
     if (dealership) {
-      const dealershipUsers = AuthManager.getDealershipUsers(dealership.id);
-      setUsers(dealershipUsers);
+      setIsLoading(true);
+      try {
+        const dealershipUsers = await SupabaseAuthManager.getDealershipUsers(dealership.id);
+        setUsers(dealershipUsers);
+      } catch (error) {
+        console.error('Error loading users:', error);
+      } finally {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -81,10 +89,14 @@ const UserManagement: React.FC = () => {
     }
   };
 
-  const handleDeactivateUser = (userId: string) => {
+  const handleDeactivateUser = async (userId: string) => {
     if (window.confirm('Are you sure you want to deactivate this user?')) {
-      AuthManager.deactivateUser(userId);
-      loadUsers();
+      try {
+        await SupabaseAuthManager.deactivateUser(userId);
+        loadUsers();
+      } catch (error) {
+        console.error('Error deactivating user:', error);
+      }
     }
   };
 
@@ -110,6 +122,19 @@ const UserManagement: React.FC = () => {
       year: 'numeric'
     });
   };
+
+  if (isLoading) {
+    return (
+      <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/20 p-8 text-center">
+        <div className="animate-pulse">
+          <div className="w-12 h-12 bg-gray-300 rounded-full mx-auto mb-4"></div>
+          <div className="h-4 bg-gray-300 rounded w-1/3 mx-auto mb-2"></div>
+          <div className="h-3 bg-gray-200 rounded w-1/4 mx-auto"></div>
+        </div>
+        <p className="text-gray-600 mt-4">Loading users...</p>
+      </div>
+    );
+  }
 
   if (!currentUser || currentUser.role !== 'admin') {
     return (

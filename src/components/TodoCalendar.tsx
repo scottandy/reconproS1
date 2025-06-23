@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { TodoManager } from '../utils/todoManager';
+import { SupabaseTodoManager } from '../utils/supabaseTodos';
 import { Todo, TodoCategory, TODO_CATEGORY_CONFIGS, PRIORITY_CONFIGS } from '../types/todo';
 import { 
   Calendar,
@@ -421,6 +421,8 @@ const TodoCalendar: React.FC = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [stats, setStats] = useState({ total: 0, pending: 0, inProgress: 0, completed: 0, overdue: 0 });
 
   // Available users and vehicles for dropdowns
   const [availableUsers, setAvailableUsers] = useState<string[]>([]);
@@ -428,9 +430,7 @@ const TodoCalendar: React.FC = () => {
 
   useEffect(() => {
     if (dealership) {
-      TodoManager.initializeDefaultTodos(dealership.id);
-      loadTodos();
-      loadAvailableData();
+      loadData();
     }
   }, [dealership]);
 
@@ -438,27 +438,40 @@ const TodoCalendar: React.FC = () => {
     filterTodos();
   }, [todos, searchTerm, statusFilter, priorityFilter, categoryFilter, assigneeFilter]);
 
-  const loadTodos = () => {
-    if (dealership) {
-      const allTodos = TodoManager.getTodos(dealership.id);
+  const loadData = async () => {
+    if (!dealership) return;
+    
+    setIsLoading(true);
+    try {
+      // Initialize default todos if needed
+      await SupabaseTodoManager.initializeDefaultTodos(dealership.id);
+      
+      // Load todos
+      const allTodos = await SupabaseTodoManager.getTodos(dealership.id);
       setTodos(allTodos);
+      
+      // Load stats
+      const todoStats = await SupabaseTodoManager.getTodoStats(dealership.id);
+      setStats(todoStats);
+      
+      // Load available users (mock data for now)
+      const users = ['JS', 'SJ', 'MW', 'LD', 'TB']; // From auth demo data
+      setAvailableUsers(users);
+      
+      // Load available vehicles (mock data for now)
+      const vehicles = [
+        { id: '1', name: '2023 Honda Accord' },
+        { id: '2', name: '2022 Ford F-150' },
+        { id: '3', name: '2021 Tesla Model 3' },
+        { id: '4', name: '2020 Chevrolet Camaro' },
+        { id: '5', name: '2019 Toyota Corolla' }
+      ];
+      setAvailableVehicles(vehicles);
+    } catch (error) {
+      console.error('Error loading todos:', error);
+    } finally {
+      setIsLoading(false);
     }
-  };
-
-  const loadAvailableData = () => {
-    // Load available users (mock data for now)
-    const users = ['JS', 'SJ', 'MW', 'LD', 'TB']; // From auth demo data
-    setAvailableUsers(users);
-
-    // Load available vehicles (mock data for now)
-    const vehicles = [
-      { id: '1', name: '2023 Honda Accord' },
-      { id: '2', name: '2022 Ford F-150' },
-      { id: '3', name: '2021 Tesla Model 3' },
-      { id: '4', name: '2020 Chevrolet Camaro' },
-      { id: '5', name: '2019 Toyota Corolla' }
-    ];
-    setAvailableVehicles(vehicles);
   };
 
   const filterTodos = () => {
@@ -466,7 +479,13 @@ const TodoCalendar: React.FC = () => {
 
     // Search filter
     if (searchTerm) {
-      filtered = TodoManager.searchTodos(dealership?.id || '', searchTerm);
+      filtered = filtered.filter(todo =>
+        todo.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        todo.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        todo.vehicleName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        todo.tags?.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        todo.notes?.toLowerCase().includes(searchTerm.toLowerCase())
+      );
     }
 
     // Status filter
@@ -522,42 +541,86 @@ const TodoCalendar: React.FC = () => {
     setFilteredTodos(filtered);
   };
 
-  const handleAddTodo = (todoData: Omit<Todo, 'id' | 'createdAt' | 'updatedAt'>) => {
-    if (dealership) {
-      TodoManager.addTodo(dealership.id, todoData);
-      loadTodos();
-      setShowAddModal(false);
+  const handleAddTodo = async (todoData: Omit<Todo, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (!dealership) return;
+    
+    try {
+      const newTodo = await SupabaseTodoManager.addTodo(dealership.id, todoData);
+      if (newTodo) {
+        setTodos(prev => [newTodo, ...prev]);
+        setShowAddModal(false);
+        
+        // Refresh stats
+        const todoStats = await SupabaseTodoManager.getTodoStats(dealership.id);
+        setStats(todoStats);
+      }
+    } catch (error) {
+      console.error('Error adding todo:', error);
     }
   };
 
-  const handleEditTodo = (todoData: Omit<Todo, 'id' | 'createdAt' | 'updatedAt'>) => {
-    if (dealership && editingTodo) {
-      TodoManager.updateTodo(dealership.id, editingTodo.id, todoData);
-      loadTodos();
-      setEditingTodo(null);
+  const handleEditTodo = async (todoData: Omit<Todo, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (!dealership || !editingTodo) return;
+    
+    try {
+      const updatedTodo = await SupabaseTodoManager.updateTodo(dealership.id, editingTodo.id, todoData);
+      if (updatedTodo) {
+        setTodos(prev => prev.map(t => t.id === updatedTodo.id ? updatedTodo : t));
+        setEditingTodo(null);
+        
+        // Refresh stats
+        const todoStats = await SupabaseTodoManager.getTodoStats(dealership.id);
+        setStats(todoStats);
+      }
+    } catch (error) {
+      console.error('Error updating todo:', error);
     }
   };
 
-  const handleDeleteTodo = (todo: Todo) => {
-    if (dealership && window.confirm(`Are you sure you want to delete "${todo.title}"?`)) {
-      TodoManager.deleteTodo(dealership.id, todo.id);
-      loadTodos();
+  const handleDeleteTodo = async (todo: Todo) => {
+    if (!dealership) return;
+    
+    if (window.confirm(`Are you sure you want to delete "${todo.title}"?`)) {
+      try {
+        const success = await SupabaseTodoManager.deleteTodo(dealership.id, todo.id);
+        if (success) {
+          setTodos(prev => prev.filter(t => t.id !== todo.id));
+          
+          // Refresh stats
+          const todoStats = await SupabaseTodoManager.getTodoStats(dealership.id);
+          setStats(todoStats);
+        }
+      } catch (error) {
+        console.error('Error deleting todo:', error);
+      }
     }
   };
 
-  const handleStatusChange = (todo: Todo, newStatus: Todo['status']) => {
-    if (dealership) {
+  const handleStatusChange = async (todo: Todo, newStatus: Todo['status']) => {
+    if (!dealership || !user) return;
+    
+    try {
       const updates: Partial<Todo> = { status: newStatus };
       if (newStatus === 'completed') {
-        updates.completedBy = user?.initials;
+        updates.completedBy = user.initials;
+        updates.completedAt = new Date().toISOString();
       }
-      TodoManager.updateTodo(dealership.id, todo.id, updates);
-      loadTodos();
+      
+      const updatedTodo = await SupabaseTodoManager.updateTodo(dealership.id, todo.id, updates);
+      if (updatedTodo) {
+        setTodos(prev => prev.map(t => t.id === updatedTodo.id ? updatedTodo : t));
+        
+        // Refresh stats
+        const todoStats = await SupabaseTodoManager.getTodoStats(dealership.id);
+        setStats(todoStats);
+      }
+    } catch (error) {
+      console.error('Error updating todo status:', error);
     }
   };
 
   const formatDueDate = (dueDate: string, dueTime?: string) => {
-    return TodoManager.formatDueDate(dueDate, dueTime);
+    return SupabaseTodoManager.formatDueDate(dueDate, dueTime);
   };
 
   const isOverdue = (todo: Todo) => {
@@ -576,12 +639,18 @@ const TodoCalendar: React.FC = () => {
     return dueDate === today;
   };
 
-  const getTodoStats = () => {
-    if (!dealership) return { total: 0, pending: 0, inProgress: 0, completed: 0, overdue: 0 };
-    return TodoManager.getTodoStats(dealership.id);
-  };
-
-  const stats = getTodoStats();
+  if (isLoading) {
+    return (
+      <div className="bg-white/70 dark:bg-gray-800/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/20 dark:border-gray-700/20 p-8 text-center">
+        <div className="animate-pulse">
+          <div className="w-12 h-12 bg-gray-300 dark:bg-gray-700 rounded-full mx-auto mb-4"></div>
+          <div className="h-4 bg-gray-300 dark:bg-gray-700 rounded w-1/3 mx-auto mb-2"></div>
+          <div className="h-3 bg-gray-200 dark:bg-gray-600 rounded w-1/4 mx-auto"></div>
+        </div>
+        <p className="text-gray-600 dark:text-gray-400 mt-4">Loading todos...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 sm:space-y-6">

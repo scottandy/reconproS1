@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { ContactManager } from '../utils/contactManager';
+import { SupabaseContactManager } from '../utils/supabaseContacts';
 import { Contact, ContactCategory, CONTACT_CATEGORY_CONFIGS } from '../types/contact';
 import { 
   Phone, 
@@ -452,11 +452,12 @@ const ContactManagement: React.FC = () => {
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [showInactive, setShowInactive] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [stats, setStats] = useState({ total: 0, active: 0, favorites: 0, byCategory: {} });
 
   useEffect(() => {
     if (dealership) {
-      ContactManager.initializeDefaultContacts(dealership.id);
-      loadContacts();
+      loadData();
     }
   }, [dealership]);
 
@@ -464,10 +465,25 @@ const ContactManagement: React.FC = () => {
     filterContacts();
   }, [contacts, searchTerm, categoryFilter, showInactive]);
 
-  const loadContacts = () => {
-    if (dealership) {
-      const allContacts = ContactManager.getContacts(dealership.id);
+  const loadData = async () => {
+    if (!dealership) return;
+    
+    setIsLoading(true);
+    try {
+      // Initialize default contacts if needed
+      await SupabaseContactManager.initializeDefaultContacts(dealership.id);
+      
+      // Load contacts
+      const allContacts = await SupabaseContactManager.getContacts(dealership.id);
       setContacts(allContacts);
+      
+      // Load stats
+      const contactStats = await SupabaseContactManager.getContactStats(dealership.id);
+      setStats(contactStats);
+    } catch (error) {
+      console.error('Error loading contacts:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -481,10 +497,13 @@ const ContactManagement: React.FC = () => {
 
     // Filter by search term
     if (searchTerm) {
-      filtered = ContactManager.searchContacts(dealership?.id || '', searchTerm);
-      if (!showInactive) {
-        filtered = filtered.filter(contact => contact.isActive);
-      }
+      filtered = filtered.filter(contact => 
+        contact.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        contact.company?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        contact.phone.includes(searchTerm) ||
+        contact.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        contact.specialties?.some(specialty => specialty.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
     }
 
     // Filter by category
@@ -504,41 +523,99 @@ const ContactManagement: React.FC = () => {
     setFilteredContacts(filtered);
   };
 
-  const handleAddContact = (contactData: Omit<Contact, 'id' | 'createdAt' | 'updatedAt'>) => {
-    if (dealership) {
-      ContactManager.addContact(dealership.id, contactData);
-      loadContacts();
-      setShowAddModal(false);
+  const handleAddContact = async (contactData: Omit<Contact, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (!dealership) return;
+    
+    try {
+      const newContact = await SupabaseContactManager.addContact(dealership.id, contactData);
+      if (newContact) {
+        setContacts(prev => [newContact, ...prev]);
+        setShowAddModal(false);
+        
+        // Refresh stats
+        const contactStats = await SupabaseContactManager.getContactStats(dealership.id);
+        setStats(contactStats);
+      }
+    } catch (error) {
+      console.error('Error adding contact:', error);
     }
   };
 
-  const handleEditContact = (contactData: Omit<Contact, 'id' | 'createdAt' | 'updatedAt'>) => {
-    if (dealership && editingContact) {
-      ContactManager.updateContact(dealership.id, editingContact.id, contactData);
-      loadContacts();
-      setEditingContact(null);
+  const handleEditContact = async (contactData: Omit<Contact, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (!dealership || !editingContact) return;
+    
+    try {
+      const updatedContact = await SupabaseContactManager.updateContact(dealership.id, editingContact.id, contactData);
+      if (updatedContact) {
+        setContacts(prev => prev.map(c => c.id === updatedContact.id ? updatedContact : c));
+        setEditingContact(null);
+        
+        // Refresh stats
+        const contactStats = await SupabaseContactManager.getContactStats(dealership.id);
+        setStats(contactStats);
+      }
+    } catch (error) {
+      console.error('Error updating contact:', error);
     }
   };
 
-  const handleDeleteContact = (contact: Contact) => {
-    if (dealership && window.confirm(`Are you sure you want to delete "${contact.name}"?`)) {
-      ContactManager.deleteContact(dealership.id, contact.id);
-      loadContacts();
+  const handleDeleteContact = async (contact: Contact) => {
+    if (!dealership) return;
+    
+    if (window.confirm(`Are you sure you want to delete "${contact.name}"?`)) {
+      try {
+        const success = await SupabaseContactManager.deleteContact(dealership.id, contact.id);
+        if (success) {
+          setContacts(prev => prev.filter(c => c.id !== contact.id));
+          
+          // Refresh stats
+          const contactStats = await SupabaseContactManager.getContactStats(dealership.id);
+          setStats(contactStats);
+        }
+      } catch (error) {
+        console.error('Error deleting contact:', error);
+      }
     }
   };
 
-  const handleToggleFavorite = (contact: Contact) => {
-    if (dealership) {
-      ContactManager.toggleFavorite(dealership.id, contact.id);
-      loadContacts();
+  const handleToggleFavorite = async (contact: Contact) => {
+    if (!dealership) return;
+    
+    try {
+      const success = await SupabaseContactManager.toggleFavorite(dealership.id, contact.id);
+      if (success) {
+        setContacts(prev => prev.map(c => {
+          if (c.id === contact.id) {
+            return { ...c, isFavorite: !c.isFavorite };
+          }
+          return c;
+        }));
+        
+        // Refresh stats
+        const contactStats = await SupabaseContactManager.getContactStats(dealership.id);
+        setStats(contactStats);
+      }
+    } catch (error) {
+      console.error('Error toggling favorite:', error);
     }
   };
 
-  const handleCall = (contact: Contact) => {
-    if (dealership) {
-      ContactManager.logCall(dealership.id, contact.id);
-      ContactManager.makePhoneCall(contact.phone);
-      loadContacts(); // Refresh to update last contacted
+  const handleCall = async (contact: Contact) => {
+    if (!dealership) return;
+    
+    try {
+      await SupabaseContactManager.logCall(dealership.id, contact.id);
+      SupabaseContactManager.makePhoneCall(contact.phone);
+      
+      // Update contact in state with new lastContacted date
+      setContacts(prev => prev.map(c => {
+        if (c.id === contact.id) {
+          return { ...c, lastContacted: new Date().toISOString() };
+        }
+        return c;
+      }));
+    } catch (error) {
+      console.error('Error logging call:', error);
     }
   };
 
@@ -550,12 +627,18 @@ const ContactManagement: React.FC = () => {
     });
   };
 
-  const getContactStats = () => {
-    if (!dealership) return { total: 0, active: 0, favorites: 0, byCategory: {} };
-    return ContactManager.getContactStats(dealership.id);
-  };
-
-  const stats = getContactStats();
+  if (isLoading) {
+    return (
+      <div className="bg-white/70 dark:bg-gray-800/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/20 dark:border-gray-700/20 p-8 text-center">
+        <div className="animate-pulse">
+          <div className="w-12 h-12 bg-gray-300 dark:bg-gray-700 rounded-full mx-auto mb-4"></div>
+          <div className="h-4 bg-gray-300 dark:bg-gray-700 rounded w-1/3 mx-auto mb-2"></div>
+          <div className="h-3 bg-gray-200 dark:bg-gray-600 rounded w-1/4 mx-auto"></div>
+        </div>
+        <p className="text-gray-600 dark:text-gray-400 mt-4">Loading contacts...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -752,7 +835,7 @@ const ContactManagement: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <Phone className="w-3 h-3 sm:w-4 sm:h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                     <span className="text-xs sm:text-sm text-gray-700 dark:text-gray-300 font-mono">
-                      {ContactManager.formatPhoneNumber(contact.phone)}
+                      {SupabaseContactManager.formatPhoneNumber(contact.phone)}
                     </span>
                   </div>
                   

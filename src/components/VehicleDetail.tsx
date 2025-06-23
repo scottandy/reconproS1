@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { mockVehicles } from '../data/mockVehicles';
 import { Vehicle, TeamNote, InspectionStatus } from '../types/vehicle';
-import { AnalyticsManager } from '../utils/analytics';
+import { SupabaseVehicleManager } from '../utils/supabaseVehicles';
+import { SupabaseAnalyticsManager } from '../utils/supabaseAnalytics';
 import StatusBadge from './StatusBadge';
 import InspectionChecklist from './InspectionChecklist';
 import TeamNotes from './TeamNotes';
@@ -36,7 +36,7 @@ import {
 const VehicleDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, dealership } = useAuth();
   const [vehicle, setVehicle] = useState<Vehicle | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
@@ -45,7 +45,7 @@ const VehicleDetail: React.FC = () => {
   const [rightPanelView, setRightPanelView] = useState<'inspection' | 'team-notes'>('inspection');
   const [showPdfModal, setShowPdfModal] = useState(false);
   
-  // NEW: Location editing state
+  // Location editing state
   const [isEditingLocation, setIsEditingLocation] = useState(false);
   const [editedLocation, setEditedLocation] = useState('');
 
@@ -55,49 +55,26 @@ const VehicleDetail: React.FC = () => {
     }
   }, [id]);
 
-  const loadVehicle = (vehicleId: string) => {
+  const loadVehicle = async (vehicleId: string) => {
     setIsLoading(true);
     
-    // Start with mock vehicles
-    let allVehicles = [...mockVehicles];
-
-    // Load added vehicles from localStorage
-    const savedAddedVehicles = localStorage.getItem('addedVehicles');
-    if (savedAddedVehicles) {
-      try {
-        const addedVehicles = JSON.parse(savedAddedVehicles);
-        allVehicles = [...addedVehicles, ...allVehicles];
-      } catch (error) {
-        console.error('Error loading added vehicles:', error);
+    try {
+      const vehicleData = await SupabaseVehicleManager.getVehicle(vehicleId);
+      setVehicle(vehicleData);
+      
+      if (vehicleData) {
+        setEditedNotes(vehicleData.notes || '');
+        setEditedLocation(vehicleData.location);
       }
+    } catch (error) {
+      console.error('Error loading vehicle:', error);
+    } finally {
+      setIsLoading(false);
     }
-
-    // Load vehicle updates from localStorage
-    const savedUpdates = localStorage.getItem('vehicleUpdates');
-    if (savedUpdates) {
-      try {
-        const updates = JSON.parse(savedUpdates);
-        allVehicles = allVehicles.map(v => 
-          updates[v.id] ? { ...v, ...updates[v.id] } : v
-        );
-      } catch (error) {
-        console.error('Error loading vehicle updates:', error);
-      }
-    }
-
-    const foundVehicle = allVehicles.find(v => v.id === vehicleId);
-    setVehicle(foundVehicle || null);
-    
-    if (foundVehicle) {
-      setEditedNotes(foundVehicle.notes || '');
-      setEditedLocation(foundVehicle.location);
-    }
-    
-    setIsLoading(false);
   };
 
-  const handleStatusUpdate = (section: keyof Vehicle['status'], status: InspectionStatus) => {
-    if (!vehicle) return;
+  const handleStatusUpdate = async (section: keyof Vehicle['status'], status: InspectionStatus) => {
+    if (!vehicle || !dealership) return;
 
     const updatedVehicle = {
       ...vehicle,
@@ -108,11 +85,18 @@ const VehicleDetail: React.FC = () => {
     };
 
     setVehicle(updatedVehicle);
-    saveVehicleUpdate(updatedVehicle);
+    
+    try {
+      await SupabaseVehicleManager.updateVehicle(vehicle.id, {
+        status: updatedVehicle.status
+      });
+    } catch (error) {
+      console.error('Error updating vehicle status:', error);
+    }
   };
 
-  const handleSectionComplete = (section: keyof Vehicle['status'], userInitials: string) => {
-    if (!vehicle) return;
+  const handleSectionComplete = async (section: keyof Vehicle['status'], userInitials: string) => {
+    if (!vehicle || !dealership) return;
 
     const updatedVehicle = {
       ...vehicle,
@@ -123,47 +107,63 @@ const VehicleDetail: React.FC = () => {
     };
 
     setVehicle(updatedVehicle);
-    saveVehicleUpdate(updatedVehicle);
+    
+    try {
+      await SupabaseVehicleManager.updateVehicle(vehicle.id, {
+        status: updatedVehicle.status
+      });
 
-    // Record analytics
-    const vehicleName = `${vehicle.year} ${vehicle.make} ${vehicle.model}`;
-    AnalyticsManager.recordCompletion(
-      vehicle.id, 
-      vehicleName, 
-      section as any, 
-      userInitials
-    );
+      // Record analytics
+      const vehicleName = `${vehicle.year} ${vehicle.make} ${vehicle.model}`;
+      await SupabaseAnalyticsManager.recordCompletion(
+        dealership.id,
+        vehicle.id, 
+        vehicleName, 
+        section as any, 
+        userInitials
+      );
+    } catch (error) {
+      console.error('Error completing section:', error);
+    }
   };
 
-  const handleAddTeamNote = (note: Omit<TeamNote, 'id' | 'timestamp'>) => {
+  const handleAddTeamNote = async (note: Omit<TeamNote, 'id' | 'timestamp'>) => {
     if (!vehicle) return;
 
-    const newNote: TeamNote = {
-      ...note,
-      id: Date.now().toString(),
-      timestamp: new Date().toISOString()
-    };
+    try {
+      const newNote = await SupabaseVehicleManager.addTeamNote(vehicle.id, note);
+      
+      if (newNote) {
+        const updatedVehicle = {
+          ...vehicle,
+          teamNotes: [newNote, ...(vehicle.teamNotes || [])]
+        };
 
-    const updatedVehicle = {
-      ...vehicle,
-      teamNotes: [newNote, ...(vehicle.teamNotes || [])]
-    };
-
-    setVehicle(updatedVehicle);
-    saveVehicleUpdate(updatedVehicle);
+        setVehicle(updatedVehicle);
+      }
+    } catch (error) {
+      console.error('Error adding team note:', error);
+    }
   };
 
-  const handleSaveNotes = () => {
+  const handleSaveNotes = async () => {
     if (!vehicle) return;
 
-    const updatedVehicle = {
-      ...vehicle,
-      notes: editedNotes.trim() || undefined
-    };
+    try {
+      await SupabaseVehicleManager.updateVehicle(vehicle.id, {
+        notes: editedNotes.trim() || undefined
+      });
 
-    setVehicle(updatedVehicle);
-    saveVehicleUpdate(updatedVehicle);
-    setIsEditingNotes(false);
+      const updatedVehicle = {
+        ...vehicle,
+        notes: editedNotes.trim() || undefined
+      };
+
+      setVehicle(updatedVehicle);
+      setIsEditingNotes(false);
+    } catch (error) {
+      console.error('Error saving notes:', error);
+    }
   };
 
   const handleCancelEditNotes = () => {
@@ -171,8 +171,8 @@ const VehicleDetail: React.FC = () => {
     setIsEditingNotes(false);
   };
 
-  // NEW: Location update handlers
-  const handleSaveLocation = () => {
+  // Location update handlers
+  const handleSaveLocation = async () => {
     if (!vehicle || !user) return;
 
     const oldLocation = vehicle.location;
@@ -183,27 +183,26 @@ const VehicleDetail: React.FC = () => {
       return;
     }
 
-    const updatedVehicle = {
-      ...vehicle,
-      location: newLocation,
-      locationChangedBy: user.initials,
-      locationChangedDate: new Date().toISOString()
-    };
+    try {
+      await SupabaseVehicleManager.updateVehicle(vehicle.id, {
+        location: newLocation,
+        locationChangedBy: user.initials,
+        locationChangedDate: new Date().toISOString()
+      });
 
-    // Add team note about location change
-    const locationNote: TeamNote = {
-      id: Date.now().toString(),
-      text: `Vehicle location changed from "${oldLocation}" to "${newLocation}".`,
-      userInitials: user.initials,
-      timestamp: new Date().toISOString(),
-      category: 'general'
-    };
+      // Add team note about location change
+      await SupabaseVehicleManager.addTeamNote(vehicle.id, {
+        text: `Vehicle location changed from "${oldLocation}" to "${newLocation}".`,
+        userInitials: user.initials,
+        category: 'general'
+      });
 
-    updatedVehicle.teamNotes = [locationNote, ...(vehicle.teamNotes || [])];
-
-    setVehicle(updatedVehicle);
-    saveVehicleUpdate(updatedVehicle);
-    setIsEditingLocation(false);
+      // Reload vehicle to get updated data
+      await loadVehicle(vehicle.id);
+      setIsEditingLocation(false);
+    } catch (error) {
+      console.error('Error updating location:', error);
+    }
   };
 
   const handleCancelEditLocation = () => {
@@ -211,20 +210,7 @@ const VehicleDetail: React.FC = () => {
     setIsEditingLocation(false);
   };
 
-  const saveVehicleUpdate = (updatedVehicle: Vehicle) => {
-    const savedUpdates = localStorage.getItem('vehicleUpdates');
-    const updates = savedUpdates ? JSON.parse(savedUpdates) : {};
-    updates[updatedVehicle.id] = updatedVehicle;
-    localStorage.setItem('vehicleUpdates', JSON.stringify(updates));
-
-    // Trigger storage event for other components to listen to
-    window.dispatchEvent(new StorageEvent('storage', {
-      key: 'vehicleUpdates',
-      newValue: JSON.stringify(updates)
-    }));
-  };
-
-  // 🎯 NEW: Mobile scroll to section functionality
+  // Mobile scroll to section functionality
   const handleMobileSectionClick = (section: string) => {
     // Set the active filter
     setActiveFilter(activeFilter === section ? null : section);
@@ -250,7 +236,7 @@ const VehicleDetail: React.FC = () => {
   const getOverallProgress = () => {
     if (!vehicle) return 0;
     
-    // Use the new detailed progress calculator
+    // Use the detailed progress calculator
     return ProgressCalculator.calculateDetailedProgress(vehicle.id, vehicle);
   };
 
@@ -279,7 +265,7 @@ const VehicleDetail: React.FC = () => {
     return vehicle.teamNotes.filter(note => note.category === 'summary');
   };
 
-  // NEW: Get location style for visual indication
+  // Get location style for visual indication
   const getLocationStyle = (location: string) => {
     const locationLower = location.toLowerCase();
     

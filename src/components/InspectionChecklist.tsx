@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Vehicle, InspectionStatus, TeamNote } from '../types/vehicle';
 import { useAuth } from '../contexts/AuthContext';
-import { AnalyticsManager } from '../utils/analytics';
-import { InspectionSettingsManager } from '../utils/inspectionSettingsManager';
+import { SupabaseAnalyticsManager } from '../utils/supabaseAnalytics';
+import { SupabaseInspectionManager } from '../utils/supabaseInspection';
 import { InspectionSettings, InspectionSection, InspectionItem, RatingLabel } from '../types/inspectionSettings';
 import { CheckCircle2, Circle, Save, Star, AlertTriangle, CheckCircle, Clock, Filter, X, ChevronDown, ChevronUp, FileText } from 'lucide-react';
 
@@ -496,42 +496,37 @@ const InspectionChecklist: React.FC<InspectionChecklistProps> = ({
   // Load inspection settings when component mounts
   useEffect(() => {
     if (dealership) {
-      // Initialize default settings if needed
-      InspectionSettingsManager.initializeDefaultSettings(dealership.id);
-      
-      // Load settings
-      const settings = InspectionSettingsManager.getSettings(dealership.id);
-      setInspectionSettings(settings);
-      
-      // Listen for settings changes
-      const handleStorageChange = (e: StorageEvent) => {
-        if (e.key === `dealership_inspection_settings_${dealership.id}`) {
-          const updatedSettings = InspectionSettingsManager.getSettings(dealership.id);
-          setInspectionSettings(updatedSettings);
-        }
-      };
-      
-      window.addEventListener('storage', handleStorageChange);
-      return () => window.removeEventListener('storage', handleStorageChange);
+      loadInspectionSettings();
     }
   }, [dealership]);
 
+  const loadInspectionSettings = async () => {
+    if (!dealership) return;
+    
+    try {
+      // Initialize default settings if needed
+      await SupabaseInspectionManager.initializeDefaultSettings(dealership.id);
+      
+      // Load settings
+      const settings = await SupabaseInspectionManager.getSettings(dealership.id);
+      setInspectionSettings(settings);
+    } catch (error) {
+      console.error('Error loading inspection settings:', error);
+    }
+  };
+
   // 🎯 BULLETPROOF DATA LOADING - ONLY RUNS ONCE
   useEffect(() => {
-    const loadInspectionData = () => {
+    const loadInspectionData = async () => {
+      if (!vehicle) return;
+      
       try {
-        const savedInspections = localStorage.getItem('vehicleInspections');
-        if (savedInspections) {
-          const inspections = JSON.parse(savedInspections);
-          const vehicleInspection = inspections[vehicle.id];
-          
-          if (vehicleInspection) {
-            setInspectionData(vehicleInspection);
-          } else {
-            // Initialize with default data
-            setInspectionData(DEFAULT_INSPECTION_DATA);
-          }
+        const vehicleInspection = await SupabaseInspectionManager.getInspectionData(vehicle.id);
+        
+        if (vehicleInspection) {
+          setInspectionData(vehicleInspection);
         } else {
+          // Initialize with default data
           setInspectionData(DEFAULT_INSPECTION_DATA);
         }
       } catch (error) {
@@ -571,27 +566,26 @@ const InspectionChecklist: React.FC<InspectionChecklistProps> = ({
     };
   }, [inspectionData, isLoaded]);
 
-  // Save inspection data to localStorage
-  const saveInspectionData = () => {
+  // Save inspection data to Supabase
+  const saveInspectionData = async () => {
+    if (!vehicle || !dealership) return;
+    
     try {
-      const savedInspections = localStorage.getItem('vehicleInspections');
-      const inspections = savedInspections ? JSON.parse(savedInspections) : {};
+      // Save each section separately
+      for (const sectionKey in inspectionData) {
+        // Skip non-array properties
+        if (!Array.isArray(inspectionData[sectionKey])) continue;
+        
+        const sectionData = {
+          items: inspectionData[sectionKey],
+          sectionNotes: inspectionData.sectionNotes[sectionKey] || null,
+          overallNotes: inspectionData.overallNotes || null
+        };
+        
+        await SupabaseInspectionManager.saveInspectionData(vehicle.id, sectionKey, sectionData);
+      }
       
-      const dataToSave = {
-        ...inspectionData,
-        lastSaved: new Date().toISOString()
-      };
-      
-      inspections[vehicle.id] = dataToSave;
-      localStorage.setItem('vehicleInspections', JSON.stringify(inspections));
-      
-      // Trigger storage event for real-time updates
-      window.dispatchEvent(new StorageEvent('storage', {
-        key: 'vehicleInspections',
-        newValue: JSON.stringify(inspections)
-      }));
-      
-      console.log(`✅ Inspection data auto-saved for vehicle ${vehicle.id}`);
+      console.log(`✅ Inspection data saved for vehicle ${vehicle.id}`);
     } catch (error) {
       console.error('Error saving inspection data:', error);
     }
@@ -599,6 +593,8 @@ const InspectionChecklist: React.FC<InspectionChecklistProps> = ({
 
   // 🎯 ENHANCED: Auto-use logged-in user's initials
   const updateInspectionItem = (section: keyof InspectionData, key: string, rating: ItemRating) => {
+    if (!dealership) return;
+    
     // Get custom rating labels if available
     const ratingLabels = inspectionSettings?.ratingLabels || [];
     
@@ -660,7 +656,8 @@ const InspectionChecklist: React.FC<InspectionChecklistProps> = ({
 
       // Record analytics
       const vehicleName = `${vehicle.year} ${vehicle.make} ${vehicle.model}`;
-      AnalyticsManager.recordTaskUpdate(
+      SupabaseAnalyticsManager.recordTaskUpdate(
+        dealership.id,
         vehicle.id, 
         vehicleName, 
         sectionName as any, 

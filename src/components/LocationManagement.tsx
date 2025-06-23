@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { LocationManager } from '../utils/locationManager';
+import { SupabaseLocationManager } from '../utils/supabaseLocations';
+import { SupabaseVehicleManager } from '../utils/supabaseVehicles';
 import { Location, LocationType, LOCATION_TYPE_CONFIGS } from '../types/location';
 import { Vehicle } from '../types/vehicle';
-import { mockVehicles } from '../data/mockVehicles';
 import { 
   MapPin, 
   Plus, 
@@ -322,6 +322,7 @@ const LocationDetailModal: React.FC<LocationDetailModalProps> = ({ location, veh
 
 // NEW: Location Color Settings Component for Admin Users
 const LocationColorSettings: React.FC = () => {
+  const { dealership } = useAuth();
   const [colorSettings, setColorSettings] = useState({
     onSiteKeywords: ['lot', 'indoor', 'showroom', 'service', 'display', 'demo'],
     offSiteKeywords: ['off-site', 'storage', 'external'],
@@ -515,12 +516,11 @@ const LocationManagement: React.FC = () => {
     description: '',
     capacity: ''
   });
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     if (dealership) {
-      LocationManager.initializeDefaultLocations(dealership.id);
-      loadLocations();
-      loadVehicles();
+      loadData();
     }
   }, [dealership]);
 
@@ -528,65 +528,35 @@ const LocationManagement: React.FC = () => {
     filterLocations();
   }, [locations, searchTerm, typeFilter]);
 
-  // Listen for vehicle updates to refresh location counts
-  useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'vehicleUpdates' || e.key === 'addedVehicles' || e.key === 'soldVehicles' || e.key === 'pendingVehicles') {
-        loadVehicles();
-      }
-    };
-
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
-
-  const loadLocations = () => {
-    if (dealership) {
-      const locs = LocationManager.getLocations(dealership.id);
+  const loadData = async () => {
+    if (!dealership) return;
+    
+    setIsLoading(true);
+    try {
+      // Initialize default locations if needed
+      await SupabaseLocationManager.initializeDefaultLocations(dealership.id);
+      
+      // Load locations
+      const locs = await SupabaseLocationManager.getLocations(dealership.id);
       setLocations(locs);
+      
+      // Load vehicles
+      const vehicles = await SupabaseVehicleManager.getVehicles(dealership.id);
+      setAllVehicles(vehicles);
+      
+      // Calculate location counts
+      const counts: Record<string, number> = {};
+      vehicles.forEach(vehicle => {
+        if (vehicle.location) {
+          counts[vehicle.location] = (counts[vehicle.location] || 0) + 1;
+        }
+      });
+      setVehicleLocationCounts(counts);
+    } catch (error) {
+      console.error('Error loading data:', error);
+    } finally {
+      setIsLoading(false);
     }
-  };
-
-  const loadVehicles = () => {
-    // Load all vehicles from various sources
-    let vehicles = [...mockVehicles];
-
-    // Load added vehicles from localStorage
-    const savedAddedVehicles = localStorage.getItem('addedVehicles');
-    if (savedAddedVehicles) {
-      try {
-        const addedVehicles = JSON.parse(savedAddedVehicles);
-        vehicles = [...addedVehicles, ...vehicles];
-      } catch (error) {
-        console.error('Error loading added vehicles:', error);
-      }
-    }
-
-    // Load vehicle updates from localStorage
-    const savedUpdates = localStorage.getItem('vehicleUpdates');
-    if (savedUpdates) {
-      try {
-        const updates = JSON.parse(savedUpdates);
-        vehicles = vehicles.map(v => 
-          updates[v.id] ? { ...v, ...updates[v.id] } : v
-        );
-      } catch (error) {
-        console.error('Error loading vehicle updates:', error);
-      }
-    }
-
-    // Filter out sold and pending vehicles
-    const activeVehicles = vehicles.filter(v => !v.isSold && !v.isPending);
-    setAllVehicles(activeVehicles);
-
-    // Calculate location counts
-    const counts: Record<string, number> = {};
-    activeVehicles.forEach(vehicle => {
-      if (vehicle.location) {
-        counts[vehicle.location] = (counts[vehicle.location] || 0) + 1;
-      }
-    });
-    setVehicleLocationCounts(counts);
   };
 
   const filterLocations = () => {
@@ -606,53 +576,80 @@ const LocationManagement: React.FC = () => {
     setFilteredLocations(filtered);
   };
 
-  const handleLocationClick = (location: Location) => {
-    setSelectedLocation(location);
+  const handleLocationClick = async (location: Location) => {
+    if (!dealership) return;
+    
+    try {
+      // Get vehicles at this location
+      const vehicles = allVehicles.filter(v => v.location === location.name);
+      setSelectedLocation(location);
+    } catch (error) {
+      console.error('Error getting vehicles for location:', error);
+    }
   };
 
-  const handleAddLocation = () => {
+  const handleAddLocation = async () => {
     if (!dealership || !formData.name.trim()) return;
 
-    const locationData = {
-      name: formData.name.trim(),
-      type: formData.type,
-      description: formData.description.trim() || undefined,
-      capacity: formData.capacity ? parseInt(formData.capacity) : undefined,
-      isActive: true
-    };
+    try {
+      const locationData = {
+        name: formData.name.trim(),
+        type: formData.type,
+        description: formData.description.trim() || undefined,
+        capacity: formData.capacity ? parseInt(formData.capacity) : undefined,
+        isActive: true
+      };
 
-    LocationManager.addLocation(dealership.id, locationData);
-    loadLocations();
-    resetForm();
-    setShowAddModal(false);
+      const newLocation = await SupabaseLocationManager.addLocation(dealership.id, locationData);
+      if (newLocation) {
+        setLocations(prev => [...prev, newLocation]);
+        resetForm();
+        setShowAddModal(false);
+      }
+    } catch (error) {
+      console.error('Error adding location:', error);
+    }
   };
 
-  const handleEditLocation = () => {
+  const handleEditLocation = async () => {
     if (!dealership || !editingLocation || !formData.name.trim()) return;
 
-    const updates = {
-      name: formData.name.trim(),
-      type: formData.type,
-      description: formData.description.trim() || undefined,
-      capacity: formData.capacity ? parseInt(formData.capacity) : undefined
-    };
+    try {
+      const updates = {
+        name: formData.name.trim(),
+        type: formData.type,
+        description: formData.description.trim() || undefined,
+        capacity: formData.capacity ? parseInt(formData.capacity) : undefined
+      };
 
-    LocationManager.updateLocation(dealership.id, editingLocation.id, updates);
-    loadLocations();
-    resetForm();
-    setEditingLocation(null);
+      const updatedLocation = await SupabaseLocationManager.updateLocation(dealership.id, editingLocation.id, updates);
+      if (updatedLocation) {
+        setLocations(prev => prev.map(loc => loc.id === updatedLocation.id ? updatedLocation : loc));
+        resetForm();
+        setEditingLocation(null);
+      }
+    } catch (error) {
+      console.error('Error updating location:', error);
+    }
   };
 
-  const handleToggleActive = (location: Location) => {
+  const handleToggleActive = async (location: Location) => {
     if (!dealership) return;
 
-    LocationManager.updateLocation(dealership.id, location.id, {
-      isActive: !location.isActive
-    });
-    loadLocations();
+    try {
+      const updatedLocation = await SupabaseLocationManager.updateLocation(dealership.id, location.id, {
+        isActive: !location.isActive
+      });
+      
+      if (updatedLocation) {
+        setLocations(prev => prev.map(loc => loc.id === updatedLocation.id ? updatedLocation : loc));
+      }
+    } catch (error) {
+      console.error('Error toggling location active status:', error);
+    }
   };
 
-  const handleDeleteLocation = (location: Location) => {
+  const handleDeleteLocation = async (location: Location) => {
     if (!dealership) return;
 
     const vehicleCount = vehicleLocationCounts[location.name] || 0;
@@ -662,8 +659,14 @@ const LocationManagement: React.FC = () => {
     }
 
     if (window.confirm(`Are you sure you want to delete "${location.name}"?`)) {
-      LocationManager.deleteLocation(dealership.id, location.id);
-      loadLocations();
+      try {
+        const success = await SupabaseLocationManager.deleteLocation(dealership.id, location.id);
+        if (success) {
+          setLocations(prev => prev.filter(loc => loc.id !== location.id));
+        }
+      } catch (error) {
+        console.error('Error deleting location:', error);
+      }
     }
   };
 
@@ -719,6 +722,19 @@ const LocationManagement: React.FC = () => {
 
   const stats = getLocationStats();
   const isAdmin = user?.role === 'admin';
+
+  if (isLoading) {
+    return (
+      <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/20 p-8 text-center">
+        <div className="animate-pulse">
+          <div className="w-12 h-12 bg-gray-300 rounded-xl mx-auto mb-4"></div>
+          <div className="h-4 bg-gray-300 rounded w-1/3 mx-auto mb-2"></div>
+          <div className="h-3 bg-gray-200 rounded w-1/4 mx-auto"></div>
+        </div>
+        <p className="text-gray-600 mt-4">Loading locations...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

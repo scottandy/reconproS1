@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { mockVehicles } from '../data/mockVehicles';
 import { Vehicle, TeamNote } from '../types/vehicle';
 import VehicleCard from './VehicleCard';
 import AddVehicleModal from './AddVehicleModal';
@@ -14,6 +13,8 @@ import ContactManagement from './ContactManagement';
 import TodoCalendar from './TodoCalendar';
 import InspectionSettings from './InspectionSettings';
 import { ProgressCalculator } from '../utils/progressCalculator';
+import { SupabaseVehicleManager } from '../utils/supabaseVehicles';
+import { SupabaseLocationManager } from '../utils/supabaseLocations';
 import { 
   Car, 
   Plus, 
@@ -60,175 +61,81 @@ const Dashboard: React.FC = () => {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [soldVehicles, setSoldVehicles] = useState<Vehicle[]>([]);
   const [pendingVehicles, setPendingVehicles] = useState<Vehicle[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Load all vehicles on component mount
   useEffect(() => {
-    loadAllVehicles();
-  }, []);
-
-  // Listen for storage changes to update vehicle data in real-time
-  useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'vehicleUpdates' || e.key === 'addedVehicles' || e.key === 'soldVehicles' || e.key === 'pendingVehicles') {
-        loadAllVehicles();
-      }
-    };
-
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
-
-  const loadAllVehicles = () => {
-    // Start with mock vehicles
-    let allVehicles = [...mockVehicles];
-
-    // Load added vehicles from localStorage
-    const savedAddedVehicles = localStorage.getItem('addedVehicles');
-    if (savedAddedVehicles) {
-      try {
-        const addedVehicles = JSON.parse(savedAddedVehicles);
-        allVehicles = [...addedVehicles, ...allVehicles];
-      } catch (error) {
-        console.error('Error loading added vehicles:', error);
-      }
+    if (dealership) {
+      loadAllVehicles();
     }
+  }, [dealership]);
 
-    // Load vehicle updates from localStorage
-    const savedUpdates = localStorage.getItem('vehicleUpdates');
-    if (savedUpdates) {
-      try {
-        const updates = JSON.parse(savedUpdates);
-        allVehicles = allVehicles.map(v => 
-          updates[v.id] ? { ...v, ...updates[v.id] } : v
-        );
-      } catch (error) {
-        console.error('Error loading vehicle updates:', error);
-      }
+  const loadAllVehicles = async () => {
+    if (!dealership) return;
+    
+    setIsLoading(true);
+    try {
+      // Load active vehicles
+      const activeVehicles = await SupabaseVehicleManager.getVehicles(dealership.id);
+      setVehicles(activeVehicles);
+      
+      // Load sold vehicles
+      const soldVehiclesList = await SupabaseVehicleManager.getSoldVehicles(dealership.id);
+      setSoldVehicles(soldVehiclesList);
+      
+      // Load pending vehicles
+      const pendingVehiclesList = await SupabaseVehicleManager.getPendingVehicles(dealership.id);
+      setPendingVehicles(pendingVehiclesList);
+    } catch (error) {
+      console.error('Error loading vehicles:', error);
+    } finally {
+      setIsLoading(false);
     }
-
-    // Separate active, sold, and pending vehicles
-    const activeVehicles = allVehicles.filter(v => !v.isSold && !v.isPending);
-    const soldVehiclesList = allVehicles.filter(v => v.isSold);
-    const pendingVehiclesList = allVehicles.filter(v => v.isPending);
-
-    // Also load sold vehicles from separate storage
-    const savedSoldVehicles = localStorage.getItem('soldVehicles');
-    if (savedSoldVehicles) {
-      try {
-        const soldFromStorage = JSON.parse(savedSoldVehicles);
-        soldVehiclesList.push(...soldFromStorage.filter((sv: Vehicle) => 
-          !soldVehiclesList.some(existing => existing.id === sv.id)
-        ));
-      } catch (error) {
-        console.error('Error loading sold vehicles:', error);
-      }
-    }
-
-    // Also load pending vehicles from separate storage
-    const savedPendingVehicles = localStorage.getItem('pendingVehicles');
-    if (savedPendingVehicles) {
-      try {
-        const pendingFromStorage = JSON.parse(savedPendingVehicles);
-        pendingVehiclesList.push(...pendingFromStorage.filter((pv: Vehicle) => 
-          !pendingVehiclesList.some(existing => existing.id === pv.id)
-        ));
-      } catch (error) {
-        console.error('Error loading pending vehicles:', error);
-      }
-    }
-
-    setVehicles(activeVehicles);
-    setSoldVehicles(soldVehiclesList);
-    setPendingVehicles(pendingVehiclesList);
   };
 
-  const handleAddVehicle = (vehicleData: Omit<Vehicle, 'id'>) => {
-    const newVehicle: Vehicle = {
-      ...vehicleData,
-      id: Date.now().toString()
-    };
-
-    // Save to localStorage for persistence
-    const savedAddedVehicles = localStorage.getItem('addedVehicles');
-    const addedVehicles = savedAddedVehicles ? JSON.parse(savedAddedVehicles) : [];
-    addedVehicles.unshift(newVehicle);
-    localStorage.setItem('addedVehicles', JSON.stringify(addedVehicles));
-
-    // Update local state
-    setVehicles(prev => [newVehicle, ...prev]);
-    setShowAddVehicle(false);
-
-    // Trigger storage event for other components to listen to
-    window.dispatchEvent(new StorageEvent('storage', {
-      key: 'addedVehicles',
-      newValue: JSON.stringify(addedVehicles)
-    }));
+  const handleAddVehicle = async (vehicleData: Omit<Vehicle, 'id'>) => {
+    if (!dealership) return;
+    
+    try {
+      const newVehicle = await SupabaseVehicleManager.addVehicle(dealership.id, vehicleData);
+      if (newVehicle) {
+        setVehicles(prev => [newVehicle, ...prev]);
+        setShowAddVehicle(false);
+      }
+    } catch (error) {
+      console.error('Error adding vehicle:', error);
+    }
   };
 
-  const handleReactivateVehicle = (vehicleId: string, fromType: 'sold' | 'pending') => {
-    const userInitials = prompt('Enter your initials to reactivate this vehicle:');
+  const handleReactivateVehicle = async (vehicleId: string, fromType: 'sold' | 'pending') => {
+    if (!user) return;
+    
+    const userInitials = user.initials;
     if (!userInitials?.trim()) return;
 
-    let vehicleToReactivate: Vehicle | undefined;
-    
-    if (fromType === 'sold') {
-      vehicleToReactivate = soldVehicles.find(v => v.id === vehicleId);
-    } else {
-      vehicleToReactivate = pendingVehicles.find(v => v.id === vehicleId);
-    }
-
-    if (!vehicleToReactivate) return;
-
-    // Create reactivated vehicle
-    const reactivatedVehicle: Vehicle = {
-      ...vehicleToReactivate,
-      isSold: false,
-      isPending: false,
-      reactivatedBy: userInitials.trim().toUpperCase(),
-      reactivatedDate: new Date().toISOString(),
-      reactivatedFrom: fromType,
-      teamNotes: [
-        ...(vehicleToReactivate.teamNotes || []),
-        {
-          id: (Date.now() + Math.random()).toString(),
-          text: `Vehicle reactivated from ${fromType} status and returned to active inventory.`,
-          userInitials: userInitials.trim().toUpperCase(),
-          timestamp: new Date().toISOString(),
-          category: 'general'
+    try {
+      const reactivatedVehicle = await SupabaseVehicleManager.reactivateVehicle(vehicleId, userInitials, fromType);
+      
+      if (reactivatedVehicle) {
+        // Remove from sold/pending and add to active
+        if (fromType === 'sold') {
+          setSoldVehicles(prev => prev.filter(v => v.id !== vehicleId));
+        } else {
+          setPendingVehicles(prev => prev.filter(v => v.id !== vehicleId));
         }
-      ]
-    };
-
-    // Remove from sold/pending and add to active
-    if (fromType === 'sold') {
-      const updatedSoldVehicles = soldVehicles.filter(v => v.id !== vehicleId);
-      setSoldVehicles(updatedSoldVehicles);
-      localStorage.setItem('soldVehicles', JSON.stringify(updatedSoldVehicles));
-    } else {
-      const updatedPendingVehicles = pendingVehicles.filter(v => v.id !== vehicleId);
-      setPendingVehicles(updatedPendingVehicles);
-      localStorage.setItem('pendingVehicles', JSON.stringify(updatedPendingVehicles));
+        
+        // Add to active vehicles
+        setVehicles(prev => [reactivatedVehicle, ...prev]);
+        
+        alert(`Vehicle successfully reactivated from ${fromType} status!`);
+      }
+    } catch (error) {
+      console.error('Error reactivating vehicle:', error);
+      alert(`Error reactivating vehicle: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-
-    // Add to active vehicles
-    setVehicles(prev => [reactivatedVehicle, ...prev]);
-
-    // Update vehicle updates storage
-    const savedUpdates = localStorage.getItem('vehicleUpdates');
-    const updates = savedUpdates ? JSON.parse(savedUpdates) : {};
-    updates[vehicleId] = reactivatedVehicle;
-    localStorage.setItem('vehicleUpdates', JSON.stringify(updates));
-
-    // Trigger storage events
-    window.dispatchEvent(new StorageEvent('storage', {
-      key: fromType === 'sold' ? 'soldVehicles' : 'pendingVehicles',
-      newValue: JSON.stringify(fromType === 'sold' ? updatedSoldVehicles : updatedPendingVehicles)
-    }));
-
-    alert(`Vehicle successfully reactivated from ${fromType} status!`);
   };
 
-  // NEW: Location type detection function
+  // Location type detection function
   const getVehicleLocationType = (location: string): LocationFilter => {
     const locationLower = location.toLowerCase();
     
@@ -293,7 +200,7 @@ const Dashboard: React.FC = () => {
       }
     }
 
-    // NEW: Apply location filter
+    // Apply location filter
     if (locationFilter !== 'all') {
       vehiclesToFilter = vehiclesToFilter.filter(vehicle => {
         const vehicleLocationType = getVehicleLocationType(vehicle.location);
@@ -329,7 +236,7 @@ const Dashboard: React.FC = () => {
     };
   };
 
-  // NEW: Get location filter counts
+  // Get location filter counts
   const getLocationFilterCounts = () => {
     const allActiveVehicles = vehicles;
     return {
@@ -352,7 +259,7 @@ const Dashboard: React.FC = () => {
     return { totalInventory, completed, inProgress, needsAttention };
   };
 
-  // NEW: Handle clicking on inventory summary cards
+  // Handle clicking on inventory summary cards
   const handleInventoryCardClick = (filterType: VehicleFilter) => {
     setVehicleFilter(filterType);
     // Scroll to vehicle grid
@@ -391,7 +298,7 @@ const Dashboard: React.FC = () => {
     { id: 'vehicle-pending', label: 'Pending Vehicles', icon: Clock, count: filterCounts['vehicle-pending'] }
   ];
 
-  // NEW: Location filter options
+  // Location filter options
   const locationFilterOptions = [
     { id: 'all', label: 'All Locations', icon: MapPin, count: locationFilterCounts.all },
     { id: 'on-site', label: 'On-Site', icon: MapPin, count: locationFilterCounts['on-site'], color: 'text-green-600' },
@@ -404,6 +311,19 @@ const Dashboard: React.FC = () => {
       logout();
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20 dark:from-gray-900 dark:via-gray-800/30 dark:to-gray-900/20 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 animate-pulse">
+            <Car className="w-8 h-8 text-white" />
+          </div>
+          <p className="text-gray-600 dark:text-gray-400 font-medium">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20 dark:from-gray-900 dark:via-gray-800/30 dark:to-gray-900/20 transition-colors duration-300">
