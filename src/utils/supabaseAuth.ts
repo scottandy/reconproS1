@@ -132,6 +132,11 @@ export class SupabaseAuthManager {
     console.log('🔐 Supabase login attempt for:', credentials.email);
 
     try {
+      // For demo purposes, we'll just check if the email exists and password is "demo"
+      if (credentials.password !== 'demo') {
+        throw new Error('Invalid password. For demo purposes, use "demo" as the password.');
+      }
+
       // Find user by email
       const { data: userData, error: userError } = await supabase
         .from('users')
